@@ -1,10 +1,11 @@
 # frozen_string_literal: true
+
 require_relative '../../mysql_hasher'
 
 # @summary
 #   Generate MySQL caching_sha2_password hash in expected hex format or return already hashed password
 
-Puppet::Functions.create_function(:caching_sha2_password) do
+Puppet::Functions.create_function(:'mysql::caching_sha2_password') do
   # @param password
   #   The plain text password to hash or an already hashed password (starting with 0x)
   # @param salt
@@ -13,14 +14,15 @@ Puppet::Functions.create_function(:caching_sha2_password) do
   #   The MySQL caching_sha2_password hash in hex format (with 0x prefix)
 
   dispatch :generate_hash do
-    param 'String', :password
+    param 'Variant[String, Sensitive[String]]', :password
     optional_param 'String', :salt
     return_type 'String'
   end
 
   def generate_hash(password, salt = nil)
+    password = password.unwrap if password.is_a?(Puppet::Pops::Types::PSensitiveType::Sensitive)
     Puppet::MysqlHasher.caching_sha2_password(password, salt: salt)
-  rescue => e
+  rescue StandardError => e
     raise Puppet::ParseError, "Failed to generate MySQL password hash: #{e.message}"
   end
 end

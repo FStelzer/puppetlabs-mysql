@@ -6,8 +6,11 @@ module Puppet
   # MySQL password hashing utilities
   module MysqlHasher
     # Printable ASCII characters excluding $ for salt generation
-    SALT_CHARS = (0x20..0x7E).to_a.map(&:chr).freeze - ['$']
-    SALT_CHARS.freeze
+    SALT_CHARS = ((0x20..0x7E).to_a.map(&:chr) - ['$']).freeze
+
+    # An already-hashed value, as stored by MySQL and emitted below: a hex literal
+    # with an even number of digits, so it can be passed through as X'...'.
+    HEX_HASH = %r{\A0x(?:\h\h)+\z}i
 
     # Base64-like characters for crypt encoding
     CRYPT_CHARS = (['.', '/'] + ('0'..'9').to_a + ('A'..'Z').to_a + ('a'..'z').to_a).freeze
@@ -17,14 +20,20 @@ module Puppet
     # @param salt [String, nil] Optional salt (20 bytes). If not provided, a deterministic salt is generated
     # @return [String] The MySQL caching_sha2_password hash in hex format (with 0x prefix)
     def self.caching_sha2_password(password, salt: nil)
-      return password if password =~ /^0x[A-F0-9]+$/i
+      return password if HEX_HASH.match?(password)
 
       validate_password(password)
+
+      # The algorithm is byte-oriented, and mixing a UTF-8 password with the binary
+      # SHA-256 digests raises Encoding::CompatibilityError. Work on bytes throughout.
+      password = password.b
 
       if salt.nil?
         salt = generate_deterministic_salt(password)
       else
         raise ArgumentError, "salt must be exactly 20 bytes (got #{salt.bytesize})" unless salt.bytesize == 20
+
+        salt = salt.b
       end
 
       count = 5
@@ -46,12 +55,11 @@ module Puppet
 
     # Generate deterministic salt to ensure idempotency
     def self.generate_deterministic_salt(password)
-      hash_bytes = Digest::SHA256.digest(password)
+      hash_bytes = Digest::SHA256.digest(password).bytes
 
       salt = String.new(capacity: 20)
       20.times do |i|
-        byte_value = hash_bytes[i].ord
-        salt << SALT_CHARS[byte_value % SALT_CHARS.length]
+        salt << SALT_CHARS[hash_bytes[i] % SALT_CHARS.length]
       end
       salt
     end
@@ -70,6 +78,8 @@ module Puppet
 
     # SHA-256 crypt algorithm implementation
     def self.sha_crypts(password, salt, iterations)
+      password = password.b
+      salt = salt.b
       bytes = 32
 
       b = Digest::SHA256.digest(password + salt + password)
@@ -77,7 +87,7 @@ module Puppet
       tmp = String.new(capacity: 256)
       tmp << password << salt
 
-      i = password.length
+      i = password.bytesize
       while i > 0
         if i > bytes
           tmp << b
@@ -88,7 +98,7 @@ module Puppet
         end
       end
 
-      i = password.length
+      i = password.bytesize
       while i > 0
         tmp << ((i & 1) != 0 ? b : password)
         i >>= 1
@@ -96,11 +106,11 @@ module Puppet
 
       a = Digest::SHA256.digest(tmp)
 
-      tmp = password * password.length
+      tmp = password * password.bytesize
       dp = Digest::SHA256.digest(tmp)
 
-      p = String.new(capacity: password.length)
-      i = password.length
+      p = String.new(capacity: password.bytesize)
+      i = password.bytesize
       while i > 0
         if i > bytes
           p << dp
@@ -114,8 +124,8 @@ module Puppet
       tmp = salt * (16 + a[0].ord)
       ds = Digest::SHA256.digest(tmp)
 
-      s = String.new(capacity: salt.length)
-      i = salt.length
+      s = String.new(capacity: salt.bytesize)
+      i = salt.bytesize
       while i > 0
         if i > bytes
           s << ds

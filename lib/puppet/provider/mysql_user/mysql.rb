@@ -77,7 +77,7 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
 
     password_hash = password_hash.unwrap if password_hash.is_a?(Puppet::Pops::Types::PSensitiveType::Sensitive)
 
-    if !password_hash.nil? && plugin == 'caching_sha2_password' && !password_hash.match?(/^0x[A-F0-9]+$/i)
+    if !password_hash.nil? && plugin == 'caching_sha2_password' && !Puppet::MysqlHasher::HEX_HASH.match?(password_hash)
       password_hash = Puppet::MysqlHasher.caching_sha2_password(password_hash)
     end
 
@@ -87,7 +87,7 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
       if password_hash.nil?
         self.class.mysql_caller("CREATE USER '#{merged_name}' IDENTIFIED WITH '#{plugin}'", 'system')
       elsif plugin.eql? 'caching_sha2_password'
-        self.class.mysql_caller("CREATE USER '#{merged_name}' IDENTIFIED WITH '#{plugin}' AS X'#{password_hash[2..-1]}'", 'system')
+        self.class.mysql_caller("CREATE USER '#{merged_name}' IDENTIFIED WITH '#{plugin}' AS X'#{password_hash[2..]}'", 'system')
       else
         self.class.mysql_caller("CREATE USER '#{merged_name}' IDENTIFIED WITH '#{plugin}' AS '#{password_hash}'", 'system')
       end
@@ -155,7 +155,7 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
     merged_name = self.class.cmd_user(@resource[:name])
     plugin = @resource.value(:plugin)
 
-    if plugin == 'caching_sha2_password' && !string.match?(/^0x[A-F0-9]+$/i)
+    if plugin == 'caching_sha2_password' && !Puppet::MysqlHasher::HEX_HASH.match?(string)
       string = Puppet::MysqlHasher.caching_sha2_password(string)
     end
 
@@ -175,12 +175,13 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
       end
       self.class.mysql_caller(sql, 'system')
     elsif !mysqld_version.nil? && newer_than('mysql' => '5.7.6', 'percona' => '5.7.6', 'mariadb' => '10.2.0')
-      raise ArgumentError, _('Only mysql_native_password (*ABCD...XXX) or caching_sha2_password (0x1234ABC...XXX) hashes are supported.') unless
-      %r{^\*|^$}.match?(string) || %r{0x[A-F0-9]+$}.match?(string)
+      unless %r{^\*|^$}.match?(string) || Puppet::MysqlHasher::HEX_HASH.match?(string)
+        raise ArgumentError, _('Only mysql_native_password (*ABCD...XXX) or caching_sha2_password (0x1234ABC...XXX) hashes are supported.')
+      end
 
       sql = "ALTER USER #{merged_name} IDENTIFIED WITH"
       sql += if plugin == 'caching_sha2_password'
-               " caching_sha2_password AS X'#{string[2..-1]}'"
+               " caching_sha2_password AS X'#{string[2..]}'"
              else
                " mysql_native_password AS '#{string}'"
              end
@@ -236,12 +237,13 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
   def plugin=(string)
     merged_name = self.class.cmd_user(@resource[:name])
     password_hash = @resource[:password_hash]
+    password_hash = password_hash.unwrap if password_hash.is_a?(Puppet::Pops::Types::PSensitiveType::Sensitive)
 
-    if string == 'caching_sha2_password' && !password_hash.nil? && !password_hash.match?(/^0x[A-F0-9]+$/i)
+    if string == 'caching_sha2_password' && !password_hash.nil? && !Puppet::MysqlHasher::HEX_HASH.match?(password_hash)
       password_hash = Puppet::MysqlHasher.caching_sha2_password(password_hash)
     end
 
-      if newer_than('mariadb' => '10.1.21') && string == 'ed25519'
+    if newer_than('mariadb' => '10.1.21') && string == 'ed25519'
       if newer_than('mariadb' => '10.2.0')
         sql = "ALTER USER #{merged_name} IDENTIFIED WITH '#{string}' AS '#{password_hash}'"
       else
@@ -254,8 +256,8 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
       sql = "ALTER USER #{merged_name} IDENTIFIED WITH '#{string}'"
       if string == 'mysql_native_password'
         sql += " AS '#{password_hash}'"
-      elsif string == 'caching_sha2_password'
-        sql += " AS X'#{password_hash[2..-1]}'"
+      elsif string == 'caching_sha2_password' && !password_hash.nil?
+        sql += " AS X'#{password_hash[2..]}'"
       end
     else
       # See https://bugs.mysql.com/bug.php?id=67449

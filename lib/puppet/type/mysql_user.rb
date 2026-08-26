@@ -64,15 +64,19 @@ Puppet::Type.newtype(:mysql_user) do
     end
 
     def insync?(is)
-      plugin = @resource[:plugin]
       should_value = @should.first
+      should_value = should_value.unwrap if should_value.is_a?(Puppet::Pops::Types::PSensitiveType::Sensitive)
 
-      if plugin == 'caching_sha2_password' && should_value && !should_value.match?(/^0x[A-F0-9]+$/i)
-        unless defined?(Puppet::MysqlHasher)
-          require File.expand_path(File.join(File.dirname(__FILE__), '..', 'mysql_hasher'))
-        end
-        hashed_should = Puppet::MysqlHasher.caching_sha2_password(should_value)
-        return secure_compare(is, hashed_should)
+      if @resource[:plugin] == 'caching_sha2_password' && should_value
+        require_relative '../mysql_hasher' unless defined?(Puppet::MysqlHasher)
+
+        # A plain password is hashed here so it can be compared against what the
+        # server stores; an already-hashed value passes through untouched.
+        should_value = Puppet::MysqlHasher.caching_sha2_password(should_value)
+
+        # mysql returns HEX() in upper case, so compare hex hashes case-insensitively
+        # rather than reporting a permanent change for a lower-case hash.
+        return secure_compare(is.to_s.downcase, should_value.downcase) if Puppet::MysqlHasher::HEX_HASH.match?(should_value)
       end
 
       is == should_value

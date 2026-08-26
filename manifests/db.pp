@@ -104,9 +104,15 @@ define mysql::db (
   }
   ensure_resource('mysql_database', $dbname, $db_resource)
 
+  # The hash has to match the authentication plugin the account is created with.
+  $password_hash = $plugin ? {
+    'caching_sha2_password' => Deferred('mysql::caching_sha2_password', [$password]),
+    default                 => Deferred('mysql::password', [$password]),
+  }
+
   $user_resource = {
     ensure        => $ensure,
-    password_hash => Deferred('mysql::password', [$password]),
+    password_hash => $password_hash,
     plugin        => $plugin,
     tls_options   => $tls_options,
   }

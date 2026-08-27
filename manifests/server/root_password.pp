@@ -28,11 +28,19 @@ class mysql::server::root_password {
     path    => '/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin',
   }
 
+  # The hash has to match the plugin the account is created with. MySQL 9 removed
+  # mysql_native_password, so there root has to use caching_sha2_password.
+  $root_password_hash = $mysql::server::root_password_plugin ? {
+    'caching_sha2_password' => Deferred('mysql::caching_sha2_password', [$mysql::server::root_password]),
+    default                 => Deferred('mysql::password', [$mysql::server::root_password]),
+  }
+
   # manage root password if it is set
   if $mysql::server::create_root_user and $root_password_set {
     mysql_user { 'root@localhost':
       ensure        => present,
-      password_hash => Deferred('mysql::password', [$mysql::server::root_password]),
+      plugin        => $mysql::server::root_password_plugin,
+      password_hash => $root_password_hash,
       require       => Exec['remove install pass'],
     }
   }
